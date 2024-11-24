@@ -44,7 +44,6 @@ import (
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 	"k8s.io/client-go/tools/record"
-	volumeUtil "k8s.io/kubernetes/pkg/volume/util"
 	"k8s.io/utils/mount"
 )
 
@@ -54,6 +53,9 @@ const (
 	// NodeLabelKey is the label key that this provisioner uses for PV node affinity
 	// hostname is not the best choice, but it's what pod and node affinity also use
 	NodeLabelKey = v1.LabelHostname
+
+	// CustomNodeLabelKey is ovverriden label key that this provisioner uses for PV node affinity
+	CustomNodeLabelKey = "openebs.io/nodename"
 
 	// DefaultBlockCleanerCommand is the default block device cleaning command
 	DefaultBlockCleanerCommand = "/scripts/quick_reset.sh"
@@ -527,17 +529,54 @@ func NodeExists(nodeLister corelisters.NodeLister, nodeName string) (bool, error
 //	        values:
 //	        - <node1>
 func NodeAttachedToLocalPV(pv *v1.PersistentVolume) (string, bool) {
-	nodeNames := volumeUtil.GetLocalPersistentVolumeNodeNames(pv)
-	// We assume that there should only be one matching node.
-	if nodeNames == nil || len(nodeNames) != 1 {
+	if pv.Spec.NodeAffinity == nil || pv.Spec.NodeAffinity.Required == nil {
+		//fmt.Printf("No NodeAffinity found in PV %s\n", pv.Name)
 		return "", false
 	}
-	return nodeNames[0], true
+
+	// Helper function to find node name by key
+	findNodeNamesByKey := func(key string) []string {
+		var nodeNames []string
+		for _, term := range pv.Spec.NodeAffinity.Required.NodeSelectorTerms {
+			for _, expr := range term.MatchExpressions {
+				if expr.Key == key && expr.Operator == v1.NodeSelectorOpIn {
+					//fmt.Printf("Found %s in PV %s: %v\n", key, pv.Name, expr.Values)
+					nodeNames = append(nodeNames, expr.Values...)
+				}
+			}
+		}
+		return nodeNames
+	}
+
+	// First check for kubernetes.io/hostname
+	//fmt.Printf("Checking for %s in PV %s\n", NodeNameLabel, pv.Name)
+	nodeNames := findNodeNamesByKey(NodeNameLabel)
+	if len(nodeNames) > 0 {
+		if len(nodeNames) == 1 {
+			return nodeNames[0], true
+		}
+		fmt.Printf("Multiple node names found for %s in PV %s: %v\n", NodeNameLabel, pv.Name, nodeNames)
+		return "", false
+	}
+
+	// If not found or empty, check for openebs.io/nodename
+	//fmt.Printf("Checking for %s in PV %s\n", CustomNodeLabelKey, pv.Name)
+	nodeNames = findNodeNamesByKey(CustomNodeLabelKey)
+	if len(nodeNames) > 0 {
+		if len(nodeNames) == 1 {
+			return nodeNames[0], true
+		}
+		fmt.Printf("Multiple node names found for %s in PV %s: %v\n", CustomNodeLabelKey, pv.Name, nodeNames)
+		return "", false
+	}
+
+	//fmt.Printf("No matching node found for PV %s\n", pv.Name)
+	return "", false
 }
 
 // IsLocalPVWithStorageClass checks that a PV is a local PV that belongs to any of the passed in StorageClasses.
 func IsLocalPVWithStorageClass(pv *v1.PersistentVolume, storageClassNames []string) bool {
-	if pv.Spec.Local == nil {
+	if pv.Spec.Local == nil && (pv.Spec.CSI == nil || !strings.HasPrefix(pv.Spec.CSI.Driver, "local")) {
 		return false
 	}
 
