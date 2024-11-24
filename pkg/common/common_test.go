@@ -667,3 +667,43 @@ func removeAllNodeNames(pv *v1.PersistentVolume) *v1.PersistentVolume {
 	pv.Spec.NodeAffinity.Required.NodeSelectorTerms[0].MatchExpressions[0].Values = []string{}
 	return pv
 }
+
+func TestNodeAttachedToLocalPVWithCustomKey(t *testing.T) {
+	nodeName := "testNodeName"
+
+	tests := []struct {
+		name             string
+		pv               *v1.PersistentVolume
+		expectedNodeName string
+		expectedStatus   bool
+	}{
+		{
+			name:             "kubernetes.io/hostname present",
+			pv:               withNodeAffinity(pv(), []string{nodeName}, NodeNameLabel),
+			expectedNodeName: nodeName,
+			expectedStatus:   true,
+		},
+		{
+			name:             "openebs.io/nodename present and kubernetes.io/hostname absent",
+			pv:               withNodeAffinity(pv(), []string{nodeName}, "openebs.io/nodename"),
+			expectedNodeName: nodeName,
+			expectedStatus:   true,
+		},
+		{
+			name:             "neither label present",
+			pv:               pv(),
+			expectedNodeName: "",
+			expectedStatus:   false,
+		},
+	}
+
+	for _, test := range tests {
+		nodeName, ok := NodeAttachedToLocalPV(test.pv)
+		if ok != test.expectedStatus {
+			t.Errorf("test: %s, status: %t, expectedStaus: %t", test.name, ok, test.expectedStatus)
+		}
+		if nodeName != test.expectedNodeName {
+			t.Errorf("test: %s, nodeName: %s, expectedNodeName: %s", test.name, nodeName, test.expectedNodeName)
+		}
+	}
+}
